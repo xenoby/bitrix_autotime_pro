@@ -141,7 +141,7 @@ function bitrixLogicTime(s) {
   const getStatus = () => {
     const txt = document.querySelector('.tm-timer__title')?.innerText.toLowerCase() || "";
     if (txt.includes('завершен') || txt.includes('завершён')) return 'CLOSED';
-    if (txt.includes('Работаю')) return 'OPENED';
+    if (txt.includes('работаю')) return 'OPENED';
     return 'UNKNOWN';
   };
 
