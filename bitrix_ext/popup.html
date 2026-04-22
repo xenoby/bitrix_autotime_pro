@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body { width: 220px; padding: 15px; font-family: -apple-system, sans-serif; background: #f4f7f8; }
+    .row { margin-bottom: 10px; }
+    label { display: block; margin-bottom: 2px; font-size: 11px; color: #555; font-weight: bold; }
+    input[type="time"] { width: 100%; padding: 5px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; }
+    
+    /* Основная кнопка сохранения */
+    #save { width: 100%; cursor: pointer; background: #00aeef; color: white; border: none; padding: 10px; border-radius: 4px; font-weight: bold; margin-top: 10px; }
+    #save:hover { background: #0093ca; }
+    
+    hr { border: 0; border-top: 1px solid #ddd; margin: 12px 0; }
+    #lastLog { font-size: 11px; color: #2c3e50; background: #e8f0fe; padding: 5px; border-radius: 4px; text-align: center; }
+    
+    /* Стили для выбора дней недели */
+    .days-row { display: flex; justify-content: space-between; gap: 2px; margin-top: 5px; }
+    .day-btn { 
+      width: 28px !important; height: 28px; padding: 0 !important; margin: 0 !important;
+      font-size: 10px !important; border: 1px solid #ccc !important; border-radius: 4px;
+      background: #fff !important; 
+      color: #555; /* Убрали !important, чтобы работал красный цвет для Сб/Вс */
+      font-weight: normal !important;
+      cursor: pointer;
+    }
+    
+    /* Стиль для активной (выбранной) кнопки */
+    .day-btn.active { 
+      background: #00aeef !important; 
+      color: white !important; 
+      border-color: #0093ca !important; 
+      font-weight: bold !important; 
+    }
+  </style>
+</head>
+<body>
+  <div id="lastLog">Загрузка...</div>
+  <hr>
+  <div class="row"><label>Начало дня:</label><input type="time" id="startTime" value="10:00"></div>
+  <div class="row"><label>Уход на обед:</label><input type="time" id="lunchStart" value="13:00"></div>
+  <div class="row"><label>Возврат с обеда:</label><input type="time" id="lunchEnd" value="14:00"></div>
+  <div class="row"><label>Конец дня:</label><input type="time" id="stopTime" value="18:30"></div>
+  
+  <div class="row">
+    <label>Рабочие дни:</label>
+    <div class="days-row">
+      <button class="day-btn" data-day="1">Пн</button>
+      <button class="day-btn" data-day="2">Вт</button>
+      <button class="day-btn" data-day="3">Ср</button>
+      <button class="day-btn" data-day="4">Чт</button>
+      <button class="day-btn" data-day="5">Пт</button>
+      <button class="day-btn" data-day="6" style="color: #e74c3c;">Сб</button>
+      <button class="day-btn" data-day="0" style="color: #e74c3c;">Вс</button>
+    </div>
+  </div>
+  
+  <button id="save">Сохранить всё</button>
+  
+  <script src="popup.js"></script>
+</body>
+</html>
