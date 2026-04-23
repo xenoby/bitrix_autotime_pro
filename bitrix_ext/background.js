@@ -105,68 +105,6 @@ async function checkWorkTime() {
 // ==========================================
 // БЛОК 2: СООБЩЕНИЯ (с проверкой обеда)
 // ==========================================
-/*
-async function checkMessages() {
-  try {
-    const { muteDuringLunch, lunchStart, lunchEnd } = await chrome.storage.local.get([
-      "muteDuringLunch", "lunchStart", "lunchEnd"
-    ]);
-    
-    // Проверка: сейчас обед и включена опция "Не беспокоить"?
-    if (muteDuringLunch) {
-      const now = new Date();
-      const cur = now.getHours() * 60 + now.getMinutes();
-      const parse = t => (t || "00:00").split(":").reduce((a, b) => a * 60 + (+b), 0);
-      
-      const ls = parse(lunchStart);
-      const le = parse(lunchEnd);
-      
-      if (cur >= ls && cur < le) {
-        console.log("🔕 Обеденное время — уведомления отключены");
-        return; // Пропускаем проверку сообщений
-      }
-    }
-
-    // Быстрая проверка счётчиков
-    const counters = await bxFetch("im.counters.get");
-    const chatUnread = counters?.result?.CHAT || {};
-    
-    const hasUnread = Object.values(chatUnread).some(c => c > 0);
-    if (!hasUnread) return;
-
-    // Получаем детали диалогов
-    const recent = await bxFetch("im.recent.list", { FILTER: { UNREAD: "Y" } });
-    const items = recent?.result?.items || [];
-    if (!items.length) return;
-
-    // Загружаем историю уведомлений
-    const { notifiedMsgs = [] } = await chrome.storage.local.get("notifiedMsgs");
-    const newNotified = [];
-
-    // Обрабатываем новые сообщения
-    for (const item of items) {
-      const msgId = `${item.id}_${item.message?.id}`;
-      if (notifiedMsgs.includes(msgId)) continue;
-      
-      const title = item.title || "Чат";
-      const text = item.message?.text?.substring(0, 100) || "Новое сообщение";
-      const author = item.user?.name || item.chat?.name || "";
-      const avatar = item.user?.avatar || item.avatar?.url || "bitrix.png";
-      
-      showNotify(author ? `💬 ${author}: ${title}` : `💬 ${title}`, text, avatar);
-      newNotified.push(msgId);
-    }
-
-    // Сохраняем историю (последние 100)
-    if (newNotified.length) {
-      await chrome.storage.local.set({ 
-        notifiedMsgs: [...notifiedMsgs, ...newNotified].slice(-100) 
-      });
-    }
-  } catch (e) { console.error("❌ Messages:", e.message); }
-}
-*/
-
 async function checkMessages() {
   try {
     const { muteDuringLunch, lunchStart, lunchEnd } = await chrome.storage.local.get([
