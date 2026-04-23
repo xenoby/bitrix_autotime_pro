@@ -1,249 +1,312 @@
-const INTERVAL_WORK_TIME = 1; 
-const INTERVAL_MESSAGES = 0.5; 
+const INTERVAL_WORK = 1;
+const INTERVAL_MSG = 0.5;
+const INTERVAL_REPORTS = 10;
 
-// Создаем один будильник, но внутри вызываем разные функции
-chrome.alarms.create("alarmWorkTime", { periodInMinutes: INTERVAL_WORK_TIME });
-chrome.alarms.create("alarmMessages", { periodInMinutes: INTERVAL_MESSAGES });
+// Создаём будильники
+chrome.alarms.create("workAlarm", { periodInMinutes: INTERVAL_WORK });
+chrome.alarms.create("msgAlarm", { periodInMinutes: INTERVAL_MSG });
+chrome.alarms.create("reportAlarm", { periodInMinutes: INTERVAL_REPORTS });
 
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "alarmWorkTime") checkWorkTime();
-  if (alarm.name === "alarmMessages") checkMessages();
+chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === "workAlarm") checkWorkTime();
+  if (alarm.name === "msgAlarm") checkMessages();
+  if (alarm.name === "reportAlarm") checkWeeklyReports();
 });
 
-// Кнопка "Сохранить" в popup также дергает обе проверки
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === 'START_CHECK') {
-    checkWorkTime();
-    checkMessages();
+  if (msg.type === 'START_CHECK') { 
+	checkWorkTime(); 
+	checkMessages(); 
+	checkWeeklyReports();
   }
 });
 
+// ==========================================
+// КЛИК ПО УВЕДОМЛЕНИЮ — ОТКРЫТИЕ БИТРИКСА
+// ==========================================
 chrome.notifications.onClicked.addListener(() => {
-  chrome.tabs.query({ url: ["https://*.bitrix24.ru/*",  "https://bitrix24.ru/*"] }, (tabs) => {
+  chrome.tabs.query({ url: ["https://*.bitrix24.ru/*", "https://bitrix24.ru/*"] }, (tabs) => {
     if (tabs.length > 0) {
-      // Берем первую найденную вкладку
+      // Открываем существующую вкладку
       const targetTab = tabs[0];
-      
-      // Сначала делаем активным окно браузера, в котором эта вкладка
       chrome.windows.update(targetTab.windowId, { focused: true });
-      
-      // Затем делаем активной саму вкладку
       chrome.tabs.update(targetTab.id, { active: true });
+    } else {
+      // Если вкладок нет — открываем новую
+      chrome.tabs.create({ url: "https://bitrix24.ru/" });
     }
   });
 });
 
-// --- НОВОЕ: Очистка памяти сообщений при перезагрузке страницы ---
-/*
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'loading' && tab.url && (tab.url.includes('bitrix24.ru') || tab.url.includes('ideal-plm.ru'))) {
-    console.log("Страница Битрикса обновляется, сбрасываю список уведомлений...");
-    chrome.storage.local.set({ notifiedMsgs: [] });
-  }
-});
-*/
-
-function timeToMinutes(timeStr) {
-  if (!timeStr) return 0;
-  const [hrs, mins] = timeStr.split(':').map(Number);
-  return hrs * 60 + mins;
-}
-
-function showNotify(title, msg, iconUrl = "logo.png") {
-  chrome.notifications.create({
-    type: "basic",
-    iconUrl: iconUrl, 
-    title: title,
-    message: msg,
-    priority: 2
-  }, (id) => {
-    // Если картинка не скачалась (ошибка в консоли на вашем скриншоте), пробуем еще раз с дефолтной иконкой
-    if (chrome.runtime.lastError) {
-      chrome.notifications.create({
-        type: "basic",
-        iconUrl: "logo.png",
-        title: title,
-        message: msg,
-        priority: 2
-      });
-    }
+// Универсальный запрос к Bitrix API
+async function bxFetch(method, params = {}) {
+  const { webhookUrl } = await chrome.storage.local.get("webhookUrl");
+  if (!webhookUrl) throw new Error("Webhook URL не настроен в popup");
+  
+  const url = webhookUrl.replace(/\/+$/, "") + `/${method}.json`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params)
   });
+  
+  const data = await res.json();
+  if (data.error) throw new Error(`${method}: ${data.error_description}`);
+  return data;
 }
 
 // ==========================================
 // БЛОК 1: РАБОЧЕЕ ВРЕМЯ
 // ==========================================
 async function checkWorkTime() {
-  chrome.storage.local.get(['startTime', 'stopTime', 'lunchStart', 'lunchEnd', 'selectedDays'], async (res) => {
+  try {
+    const { selectedDays, startTime, stopTime, lunchStart, lunchEnd } = await chrome.storage.local.get([
+      "selectedDays", "startTime", "stopTime", "lunchStart", "lunchEnd"
+    ]);
+    
     const today = new Date().getDay();
-    if (!(res.selectedDays || []).includes(today)) return;
+    const workDays = selectedDays || [1,2,3,4,5];
+    if (!workDays.includes(today)) return;
 
-    const tabs = await chrome.tabs.query({ url: ["https://*.bitrix24.ru/*", "https://bitrix24.ru/*"] });
-    if (!tabs.length) return;
+    const statusData = await bxFetch("timeman.status");
+    const currentStatus = statusData?.result?.STATUS || "UNKNOWN";
+    
+    const now = new Date();
+    const cur = now.getHours() * 60 + now.getMinutes();
+    const parse = t => (t || "00:00").split(":").reduce((a, b) => a * 60 + (+b), 0);
 
-    const settings = {
-      start: timeToMinutes(res.startTime || "8:00"),
-      lunchS: timeToMinutes(res.lunchStart || "12:00"),
-      lunchE: timeToMinutes(res.lunchEnd || "13:00"),
-      stop: timeToMinutes(res.stopTime || "17:00")
-    };
+    const s = parse(startTime), ls = parse(lunchStart), le = parse(lunchEnd), st = parse(stopTime);
+    let actionMethod = null;
+    let notifyMsg = null;
 
-    chrome.scripting.executeScript({
-      target: { tabId: tabs[0].id, allFrames: true },
-      world: "MAIN", 
-      func: bitrixLogicTime,
-      args: [settings]
-    }).then(results => {
-      const data = results.find(r => r.result && r.result.action)?.result; 
-	  
-	  if (data && data.action === 'weekly_report') {
-        showNotify("Bitrix Report", "Пора заполнить недельный отчет! 📝");        
-      }
-	  
-      if (data && data.action !== 'none') {
-        const labels = {
-          'day_start': "Рабочий день начат! 🚀",
-          'lunch_break': "Ушли на обед 🍕",
-          'reopen': "Работа возобновлена 💻",
-          'day_end': "Рабочий день завершен! ✅"
-        };
-        //showNotify("Bitrix Time", labels[data.action]);
-        //chrome.storage.local.set({ lastAction: `${labels[data.action]} (${new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})})` });
-		
-		const message = labels[data.action];
-		
-		if (message) {
-			showNotify("Bitrix Time", message);
-			// Записываем в лог только если сообщение существует
-			chrome.storage.local.set({ 
-				lastAction: `${message} (${new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})})` 
-			});
-		}
-      }
-    });
-  });
-}
+    if (cur >= s && cur < ls && currentStatus !== "OPENED") {
+      actionMethod = "timeman.open"; notifyMsg = "Рабочий день начат 🚀";
+    } 
+    else if (cur >= ls && cur < le && !["PAUSED","CLOSED"].includes(currentStatus)) {
+      actionMethod = "timeman.pause"; notifyMsg = "Пауза на обед 🍕";
+    }
+    else if (cur >= le && cur < st && currentStatus !== "OPENED") {
+      actionMethod = "timeman.open"; notifyMsg = "Работа возобновлена 💻";
+    }
+    else if (cur >= st && currentStatus !== "CLOSED") {
+      actionMethod = "timeman.close"; notifyMsg = "День завершен ✅";
+    }
 
-function bitrixLogicTime(s) {
-	
-  // 1. ПРОВЕРКА НЕДЕЛЬНОГО ОТЧЕТА (по вашему скриншоту)
-  // Ищем окно, ID которого начинается на timeman_weekly_report_popup
-  const reportPopup = document.querySelector('[id^="timeman_weekly_report_popup"]') || 
-                      document.querySelector('.popup-window-with-titlebar.--open');
-
-  if (reportPopup && reportPopup.innerText.includes('отчет')) {
-    return { action: 'weekly_report' };
-  }
-  
-  const now = new Date();
-  const cur = now.getHours() * 60 + now.getMinutes();
-
-  const getStatus = () => {
-    const txt = document.querySelector('.tm-timer__title')?.innerText.toLowerCase() || "";
-    if (txt.includes('завершен') || txt.includes('завершён')) return 'CLOSED';
-    if (txt.includes('работаю')) return 'OPENED';
-    return 'UNKNOWN';
-  };
-
-  const smartClick = (target) => {
-    const icon = document.querySelector('.air-user-profile-avatar__work-time-state') || document.querySelector('.work-time-state');
-    if (!icon) return false;
-    icon.click();
-    let attempts = 0;
-    const timer = setInterval(() => {
-      let btn = null;
-      if (target === 'close') {
-        btn = document.getElementById('buttonStopText') || document.querySelector('button[title*="Завершить"]');
-      } else {
-        btn = document.getElementById('buttonStartDropdownAnchorText') || document.getElementById('buttonStartText');
-        if (!btn) {
-          const btns = document.querySelectorAll('button, .ui-btn');
-          for (let b of btns) {
-            const t = b.innerText.toLowerCase();
-            if (t.includes('начать') || t.includes('возобновить') || t.includes('продолжить')) { btn = b; break; }
-          }
-        }
-      }
-      if (btn && btn.offsetWidth > 0) {
-        btn.click();
-        clearInterval(timer);
-        setTimeout(() => { if(document.querySelector('.ui-popup-menu')) icon.click(); }, 1500);
-      }
-      if (++attempts > 10) clearInterval(timer);
-    }, 500);
-    return true;
-  };
-
-  const status = getStatus();
-  let action = 'none';
-
-  if (cur >= s.start && cur < s.lunchS && status !== 'OPENED') { if(smartClick('open')) action = 'day_start'; }
-  else if (cur >= s.lunchS && cur < s.lunchE && status === 'OPENED') { if(smartClick('close')) action = 'lunch_break'; }
-  else if (cur >= s.lunchE && cur < s.stop && status !== 'OPENED') { if(smartClick('open')) action = 'reopen'; }
-  else if (cur >= s.stop && status === 'OPENED') { if(smartClick('close')) action = 'day_end'; }
-
-  return { action, status };
-}
-
-// ==========================================
-// БЛОК 2: СООБЩЕНИЯ
-// ==========================================
-async function checkMessages() {
-  const tabs = await chrome.tabs.query({ url: ["https://*.bitrix24.ru/*", "https://bitrix24.ru/*"] });
-  if (!tabs.length) return;
-
-  chrome.scripting.executeScript({
-    target: { tabId: tabs[0].id, allFrames: true },
-    world: "MAIN", 
-    func: bitrixLogicMsg
-  }).then(results => {
-    const data = results.find(r => r.result && r.result.messages)?.result;
-    if (data && data.messages.length > 0) {
-      chrome.storage.local.get(['notifiedMsgs'], (res) => {
-        let notified = res.notifiedMsgs || [];
-        data.messages.forEach(m => {
-          if (!notified.includes(m.id)) {
-            showNotify(`Чат: ${m.author}`, m.text, m.avatar || "logo.png");
-            notified.push(m.id);
-          }
-        });
-        chrome.storage.local.set({ notifiedMsgs: notified.slice(-50) });
+    if (actionMethod) {
+      await bxFetch(actionMethod);
+      showNotify("Bitrix Time", notifyMsg);
+      chrome.storage.local.set({ 
+        lastAction: `${notifyMsg} (${now.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})})` 
       });
     }
+  } catch (e) { console.error("❌ WorkTime:", e.message); }
+}
+
+// ==========================================
+// БЛОК 2: СООБЩЕНИЯ (с проверкой обеда)
+// ==========================================
+/*
+async function checkMessages() {
+  try {
+    const { muteDuringLunch, lunchStart, lunchEnd } = await chrome.storage.local.get([
+      "muteDuringLunch", "lunchStart", "lunchEnd"
+    ]);
+    
+    // Проверка: сейчас обед и включена опция "Не беспокоить"?
+    if (muteDuringLunch) {
+      const now = new Date();
+      const cur = now.getHours() * 60 + now.getMinutes();
+      const parse = t => (t || "00:00").split(":").reduce((a, b) => a * 60 + (+b), 0);
+      
+      const ls = parse(lunchStart);
+      const le = parse(lunchEnd);
+      
+      if (cur >= ls && cur < le) {
+        console.log("🔕 Обеденное время — уведомления отключены");
+        return; // Пропускаем проверку сообщений
+      }
+    }
+
+    // Быстрая проверка счётчиков
+    const counters = await bxFetch("im.counters.get");
+    const chatUnread = counters?.result?.CHAT || {};
+    
+    const hasUnread = Object.values(chatUnread).some(c => c > 0);
+    if (!hasUnread) return;
+
+    // Получаем детали диалогов
+    const recent = await bxFetch("im.recent.list", { FILTER: { UNREAD: "Y" } });
+    const items = recent?.result?.items || [];
+    if (!items.length) return;
+
+    // Загружаем историю уведомлений
+    const { notifiedMsgs = [] } = await chrome.storage.local.get("notifiedMsgs");
+    const newNotified = [];
+
+    // Обрабатываем новые сообщения
+    for (const item of items) {
+      const msgId = `${item.id}_${item.message?.id}`;
+      if (notifiedMsgs.includes(msgId)) continue;
+      
+      const title = item.title || "Чат";
+      const text = item.message?.text?.substring(0, 100) || "Новое сообщение";
+      const author = item.user?.name || item.chat?.name || "";
+      const avatar = item.user?.avatar || item.avatar?.url || "bitrix.png";
+      
+      showNotify(author ? `💬 ${author}: ${title}` : `💬 ${title}`, text, avatar);
+      newNotified.push(msgId);
+    }
+
+    // Сохраняем историю (последние 100)
+    if (newNotified.length) {
+      await chrome.storage.local.set({ 
+        notifiedMsgs: [...notifiedMsgs, ...newNotified].slice(-100) 
+      });
+    }
+  } catch (e) { console.error("❌ Messages:", e.message); }
+}
+*/
+
+async function checkMessages() {
+  try {
+    const { muteDuringLunch, lunchStart, lunchEnd } = await chrome.storage.local.get([
+      "muteDuringLunch", "lunchStart", "lunchEnd"
+    ]);
+    
+    // Проверка обеда
+    if (muteDuringLunch) {
+      const now = new Date();
+      const cur = now.getHours() * 60 + now.getMinutes();
+      const parse = t => (t || "00:00").split(":").reduce((a, b) => a * 60 + (+b), 0);
+      const ls = parse(lunchStart), le = parse(lunchEnd);
+      
+      if (cur >= ls && cur < le) {
+        console.log("🔕 Обед — уведомления отключены");
+        return;
+      }
+    }
+
+    // 1. Получаем счётчики
+    const counters = await bxFetch("im.counters.get");
+    console.log("📡 Counters:", counters?.result);
+    
+    // 2. Проверяем ВСЕ типы непрочитанных (CHAT, DIALOG, MESSENGER, COLLAB)
+    const unreadTypes = ['CHAT', 'DIALOG', 'MESSENGER', 'COLLAB'];
+    let hasUnread = false;
+    
+    for (const type of unreadTypes) {
+      const typeData = counters?.result?.[type] || {};
+      if (Object.values(typeData).some(c => c > 0)) {
+        hasUnread = true;
+        console.log(`📬 Unread in ${type}:`, typeData);
+        break;
+      }
+    }
+    
+    if (!hasUnread) {
+      console.log("✅ Нет непрочитанных ни в одном типе");
+      return;
+    }
+
+    // 3. Получаем список диалогов (без фильтра — фильтруем вручную)
+    const recent = await bxFetch("im.recent.list");
+    console.log("📡 Recent items count:", recent?.result?.items?.length);
+    
+    // Фильтруем только те, где counter > 0
+    const items = (recent?.result?.items || [])
+      .filter(item => item.counter > 0);
+    
+    if (!items.length) {
+      console.log("✅ Нет активных диалогов с непрочитанными");
+      return;
+    }
+
+    // 4. Обработка новых сообщений
+    const { notifiedMsgs = [] } = await chrome.storage.local.get("notifiedMsgs");
+    const newNotified = [];
+
+    for (const item of items) {
+      const msgId = `${item.id}_${item.message?.id}`;
+      console.log("📨 Processing:", { id: item.id, msgId, counter: item.counter });
+      
+      if (notifiedMsgs.includes(msgId)) {
+        console.log("⏭️ Уже уведомлено:", msgId);
+        continue;
+      }
+      
+      const title = item.title || "Чат";
+      const text = item.message?.text?.substring(0, 100) || "Новое сообщение";
+      const author = item.user?.name || item.chat?.name || "";
+      const avatar = item.user?.avatar || item.avatar?.url || "bitrix.png";
+      
+      console.log("🔔 Showing notify:", { title, author, text });
+      showNotify(author ? `💬 ${author}: ${title}` : `💬 ${title}`, text, avatar);
+      newNotified.push(msgId);
+    }
+
+    // 5. Сохраняем историю
+    if (newNotified.length) {
+      await chrome.storage.local.set({ 
+        notifiedMsgs: [...notifiedMsgs, ...newNotified].slice(-100) 
+      });
+      console.log(`✅ Saved ${newNotified.length} new message IDs`);
+    }
+    
+  } catch (e) { 
+    console.error("❌ Messages error:", e.message, e); 
+  }
+}
+
+// ==========================================
+// БЛОК 3: НЕДЕЛЬНЫЕ ОТЧЁТЫ
+// ==========================================
+async function checkWeeklyReports() {
+  try {
+    const res = await bxFetch("im.notify.get", { CHAT_ID: 0 }); // 0 = личные уведомления
+    const notifications = res?.result?.notifications || [];
+    
+    // Фильтруем только непрочитанные отчёты по тайм-менеджменту
+    const reports = notifications.filter(n => 
+      n.notify_module === "timeman" &&
+      (n.notify_event === "report_approve" || n.notify_event === "report_comment") &&
+      n.notify_read !== "Y"
+    );
+
+    if (!reports.length) return;
+
+    const { notifiedReports = [] } = await chrome.storage.local.get("notifiedReports");
+    const newReports = [];
+
+    for (const report of reports) {
+      if (notifiedReports.includes(report.id)) continue;
+      
+      // Извлекаем период из текста или тега
+      const periodMatch = report.text.match(/\[.*?\](.*?)\[\/URL\]/);
+      const period = periodMatch ? periodMatch[1] : "Недельный отчёт";
+      const status = report.notify_event === "report_approve" ? "✅ Утверждён" : "💬 Комментарий";
+      
+      showNotify("Bitrix Отчёт", `${status}: ${period}`);
+      newReports.push(report.id);
+    }
+
+    if (newReports.length) {
+      await chrome.storage.local.set({ 
+        notifiedReports: [...notifiedReports, ...newReports].slice(-50) 
+      });
+    }
+  } catch (e) { console.error("❌ Reports check failed:", e.message); }
+}
+
+// ==========================================
+// УВЕДОМЛЕНИЯ
+// ==========================================
+function showNotify(title, msg, icon = "bitrix.png") {
+  chrome.notifications.create({ 
+    type: "basic", 
+    iconUrl: icon, 
+    title, 
+    message: msg, 
+    priority: 2 
   });
 }
 
-function bitrixLogicMsg() {
-  const messages = [];
-  try {
-    // Ищем все активные счетчики в списке чатов
-    const counters = document.querySelectorAll('.bx-im-list-recent-item__counter_number');
-    
-    counters.forEach(cnt => {
-      const val = parseInt(cnt.innerText);
-      if (val > 0) {
-        const item = cnt.closest('.bx-im-list-recent-item__wrap');
-        if (item) {
-          const author = item.querySelector('.bx-im-chat-title__text')?.innerText || "Кто-то";
-          const text = item.querySelector('.bx-im-list-recent-item__message_text')?.innerText || "Новое сообщение";
-		  
-		  let avatarUrl = null;
-          const img = item.querySelector('.bx-im-avatar__content img');
-          if (img && img.src && img.src.startsWith('http')) {
-            avatarUrl = img.src;
-          }
-		  
-          // Генерируем уникальный ID для этого сообщения
-          const id = item.getAttribute('data-id') + "_" + text;
-          messages.push({ 
-            id, 
-            author: author.trim(), 
-            text: text.trim().substring(0, 70),
-            avatar: avatarUrl 
-          });
-        }
-      }
-    });
-  } catch (e) {}
-  return { messages };
-}

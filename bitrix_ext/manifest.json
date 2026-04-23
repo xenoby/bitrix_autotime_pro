@@ -1,22 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Bitrix Auto-Time Pro",
-  "version": "1.5",
-  "description": "Автоматизация рабочего дня и умные уведомления о сообщениях в чате Bitrix24 (интерфейс Air).",
-  "icons": {
-    "128": "bitrix.png"
-  },
-  "permissions": ["tabs", "scripting", "alarms", "notifications", "storage"],
-  "host_permissions": [
-    "https://*.bitrix24.ru/*",
-    "https://bvt-samara.bitrix24.ru/*"
-  ],
-  
-  "background": {
-    "service_worker": "background.js"
-  },
-  
-  "action": {
-    "default_popup": "popup.html"
-  }
+  "version": "2.0",
+  "description": "Автоматизация через REST API",
+  "icons": { "128": "bitrix.png" },
+  "permissions": ["alarms", "notifications", "storage"],
+  "host_permissions": ["https://*.bitrix24.ru/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html" }
 }
